@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from src.main import app, limiter
 from src.limiters.fixed_window import FixedWindowRateLimiter
 from src.limiters.sliding_window import SlidingWindowRateLimiter
+from src.limiters.token_bucket import TokenBucketRateLimiter
 
 client = TestClient(app)
 
@@ -166,4 +167,60 @@ def test_fixed_vs_sliding_boundary_burst():
     # Sliding Window correctly enforces the limit over the sliding interval.
     assert sliding_limiter.check_rate_limit(client_id)[0] is False
     assert sliding_limiter.check_rate_limit(client_id)[0] is False
+
+
+def test_token_bucket_unit_logic():
+    """
+    Unit test for TokenBucketRateLimiter verifying burst, empty, refill, and sustained traffic patterns.
+    """
+    current_time = 100.0
+    def mock_clock():
+        return current_time
+
+    # Config: capacity=5, refill_rate=2.0 tokens/second (1 token per 0.5 seconds)
+    limiter = TokenBucketRateLimiter(capacity=5, refill_rate=2.0, clock=mock_clock)
+    client_id = "test_user_tb"
+
+    # --- 1. Burst Traffic ---
+    # We send 5 rapid requests at T=100.0. All should be allowed.
+    # Remaining tokens: 4, 3, 2, 1, 0
+    for expected_remaining in [4, 3, 2, 1, 0]:
+        allowed, remaining, reset_at = limiter.check_rate_limit(client_id)
+        assert allowed is True
+        assert remaining == expected_remaining
+        # Reset time should increase as tokens decrease: T + (capacity - tokens) / refill_rate
+        expected_reset = 100.0 + (5.0 - remaining) / 2.0
+        assert reset_at == int(expected_reset)
+
+    # --- 2. Empty Bucket ---
+    # The 6th request at T=100.0 should be blocked (0 tokens)
+    allowed, remaining, reset_at = limiter.check_rate_limit(client_id)
+    assert allowed is False
+    assert remaining == 0
+    assert reset_at == int(100.0 + 5.0 / 2.0)  # 102.5 -> 102
+
+    # --- 3. Token Refill ---
+    # Advance time to T=101.5 (1.5 seconds elapsed -> 3.0 tokens refilled).
+    # Request 1 at T=101.5 allowed, consuming 1 token. Remaining tokens: 2.0.
+    current_time = 101.5
+    allowed, remaining, reset_at = limiter.check_rate_limit(client_id)
+    assert allowed is True
+    assert remaining == 2
+    assert reset_at == int(101.5 + (5.0 - 2.0) / 2.0)  # 103
+
+    # Consume the remaining 2 refilled tokens
+    assert limiter.check_rate_limit(client_id)[0] is True  # Remaining: 1
+    assert limiter.check_rate_limit(client_id)[0] is True  # Remaining: 0
+    assert limiter.check_rate_limit(client_id)[0] is False # Blocked (0 tokens)
+
+    # --- 4. Sustained Traffic ---
+    # Request sequentially at T=102.0, T=102.5, T=103.0 (every 0.5s).
+    # In each step, 0.5s * 2.0 = 1.0 token is refilled, and immediately consumed.
+    # Therefore, all requests should be allowed and remaining tokens should be 0.
+    for t in [102.0, 102.5, 103.0]:
+        current_time = t
+        allowed, remaining, reset_at = limiter.check_rate_limit(client_id)
+        assert allowed is True
+        assert remaining == 0
+
 
