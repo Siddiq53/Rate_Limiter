@@ -86,25 +86,30 @@ Results from simulating network splits, Redis crashes, and slow responses.
 ---
 
 ## Trade-offs
-Summary of memory usage, computational overhead, correctness, and implementation complexity across all tested configurations.
+Across our implementations, we observed key engineering trade-offs:
+- **Fixed Window vs. Sliding Window**: Fixed Window has $\mathcal{O}(1)$ time and space complexity, but is prone to boundary bursts (allowing up to $2 \times \text{limit}$ requests at window edges). Sliding Window Log prevents bursts with exact precision but consumes $\mathcal{O}(L)$ memory per user (storing logs of timestamps), which can exhaust server memory under high traffic.
+- **Token Bucket vs. Sliding Window**: Token Bucket is highly memory efficient ($\mathcal{O}(1)$ space per user, storing only two floats: `tokens` and `last_update_time`) and supports traffic shaping (bursting up to bucket capacity), but is less strict than Sliding Window Log.
+- **In-Memory Locks**: Introducing `threading.Lock` makes in-memory limiters thread-safe, but serializes checking logic. This introduces lock contention bottlenecks under extreme concurrency, which degrades system throughput.
 
 ---
 
 ## What I Learned
-Key insights gained during the construction of these rate limiters.
+- **GIL & Concurrency**: Learnt that Python's Global Interpreter Lock (GIL) only protects internal VM states, not application-level logic. Read-modify-write sequences are still vulnerable to race conditions (lost updates) across threads, requiring explicit locks (`threading.Lock`).
+- **Lazy Refills**: Learnt that running active background loops to refill rate-limit tokens is inefficient. The standard production approach is "lazy refills" (calculating token additions dynamically on each request).
+- **Stress-Testing Realities**: Observed how a single-threaded Python ASGI server (Uvicorn) behaves under 1,000 VUs. It reaches a CPU bottleneck (~2,500 Rps) and begins dropping TCP connections as the socket backlog queue overflows.
 
 ---
 
 ## How to Run
+Since the repository is organized into directories for each phase (`phase1/` to `phase5/` and the active `phase6/` folder), you can navigate to any phase directory and execute commands inside it.
 
-### Phase 1 Setup
+### 1. Setup the Environment
 Prerequisites: Python 3.11+
-
-1. Create a virtual environment:
+1. Create a virtual environment at the root:
    ```bash
    python -m venv .venv
    ```
-2. Activate the virtual environment:
+2. Activate it:
    - **Windows (PowerShell)**:
      ```powershell
      .venv\Scripts\Activate.ps1
@@ -115,14 +120,21 @@ Prerequisites: Python 3.11+
      ```
 3. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r phase5/requirements.txt
    ```
-4. Start the FastAPI development server:
-   ```bash
-   uvicorn src.main:app --reload
-   ```
-5. Verify the API:
-   - Open browser or make request to `http://127.0.0.1:8000/api/test`
+
+### 2. Running a Phase (e.g. Phase 6)
+To run the server or test suite for a specific phase:
+```bash
+# Navigate to the target phase folder
+cd phase6
+
+# Run the FastAPI server
+..\.venv\Scripts\uvicorn.exe src.main:app --reload
+
+# Run tests (in another terminal)
+..\.venv\Scripts\pytest.exe
+```
 
 ---
 
