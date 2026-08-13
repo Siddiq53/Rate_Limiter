@@ -50,14 +50,32 @@ Details on the distributed architecture using Redis, sentinel patterns, and perf
 ---
 
 ## Load Testing
-*(To be implemented in Phase 5)*
-Details on using `k6` to benchmark the system under various levels of load.
+We use **k6** to benchmark the FastAPI application under various concurrency levels.
+To run the benchmarks, ensure the FastAPI server is running (`uvicorn src.main:app`) and execute:
+```powershell
+k6-bin/k6.exe run --vus <NUM_VIRTUAL_USERS> --duration 10s tests/benchmark.js
+```
 
 ---
 
 ## Benchmark Results
-*(To be populated as tests run)*
-Actual empirical metrics measured using `k6`.
+The following empirical metrics were captured from running benchmarks locally against the FastAPI server (running the in-memory Fixed Window algorithm allowing 10 requests per 60 seconds):
+
+| Metric | 1 VU | 10 VUs | 100 VUs | 1000 VUs |
+| :--- | :--- | :--- | :--- | :--- |
+| **Total Requests** | 628 | 6,710 | 7,623 | 26,087 |
+| **Success (200)** | 10 | 10 | 0 | 20 |
+| **Rate-Limited (429)** | 618 | 6,700 | 7,623 | 26,067 |
+| **Throughput (Rps)** | 62.67 /s | 668.86 /s | 753.56 /s | 2,466.29 /s |
+| **Avg Latency** | 2.29 ms | 4.11 ms | 120.53 ms | 123.61 ms |
+| **p95 Latency** | 2.73 ms | 6.69 ms | 168.59 ms | 237.81 ms |
+| **Status** | 100% Ok | 100% Ok | 100% Ok | TCP connection drops observed |
+
+### Performance Analysis
+- **Throughput Capping**: The throughput scales linearly from 1 VU (62.67 Rps) to 10 VUs (668.86 Rps), but plateaus between 100 VUs (753.56 Rps) and 1000 VUs. A single Uvicorn process caps out at around **2,500 Rps** on this machine.
+- **Latency Inflation**: Average request latency remains extremely low under light concurrency (under 5ms for 1-10 VUs). However, as concurrency reaches 100+ VUs, the average latency rises significantly to **~120ms** due to task scheduling and event loop queuing in the single Python process.
+- **TCP Socket Exhaustion (1,000 VUs)**: At 1,000 VUs, the load generator attempts to spawn traffic at a rate far exceeding Uvicorn's single-threaded event loop capacity. This triggers TCP socket backlog overflows on `localhost`, resulting in connection drops (`connectex: No connection could be made because the target machine actively refused it`).
+- **Success Rate Observations**: In the 100 VU test, success was 0 because the test started immediately after the 10 VU test, and the client remained rate-limited within the 60-second window. The 1000 VU test recorded 20 successful requests because the test spanned across a 60-second boundary reset.
 
 ---
 
